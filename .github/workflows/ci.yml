@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Sanity-check tkinter is available
+        run: python -c "import tkinter"
+      - name: Install package (dev extras only, no bluetooth extra)
+        run: pip install -e ".[dev]"
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
+      - name: mypy
+        run: mypy src
+      - name: pytest (unit + fake-transport integration only)
+        run: pytest --cov=periprint --cov-report=term-missing
