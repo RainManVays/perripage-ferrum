@@ -77,3 +77,18 @@ exists for). The above tests were single `printImage()` calls only (40-150px
 each print, disconnect between most of them) — a different concern from
 sending many consecutive ~150-220px chunks back-to-back with short pauses
 over a full-length document. Needs its own test pass before Stage 4.
+
+## Stage 2 finding: `bluetoothctl scan on` output needs tag-aware parsing
+
+Found live while testing the real scan dialog against this same printer:
+`bluetoothctl --timeout N scan on` interleaves `[NEW] Device MAC Name` lines
+(an actual device announcement) with `[CHG] Device MAC Property: Value`
+lines (a property-change notification for a device bluetoothd *already*
+knows about) — both share the exact textual shape `Device <MAC> <rest>`. A
+parser that doesn't anchor on the `[NEW]` tag will treat property text like
+`LegacyPairing: yes` as the device's name and silently clobber the real one
+for any already-paired device (which is precisely the case for a printer
+you've used before — the common case, not an edge case). Fixed in
+`infra/bt/bluetoothctl_backend.py` by only matching lines starting with
+`[NEW]`; `bluetoothctl devices` (used for already-known devices) has its own
+separate parser since that output has no tags at all.
