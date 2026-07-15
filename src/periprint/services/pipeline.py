@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import fitz  # PyMuPDF
 import PIL.Image
 
 from periprint.infra.renderers.base import (
@@ -14,6 +15,7 @@ from periprint.infra.renderers.pdf_renderer import PdfRenderer
 from periprint.infra.renderers.text_renderer import TextRenderer
 from periprint.models.document import DocumentItem, PrintSettings
 from periprint.models.enums import DocumentKind
+from periprint.utils.page_range import parse_page_range
 
 _RENDERERS: dict[DocumentKind, Renderer] = {
     DocumentKind.IMAGE: ImageRenderer(),
@@ -65,6 +67,16 @@ def _apply_margins(image: PIL.Image.Image, settings: PrintSettings) -> PIL.Image
     return canvas
 
 
+def _count_pages(document: DocumentItem) -> int:
+    """Cheap page count for parsing page_range against — just opens the
+    PDF's structure, doesn't rasterize anything. Non-PDF documents are
+    always exactly 1 "page"."""
+    if document.kind != DocumentKind.PDF:
+        return 1
+    with fitz.open(document.source_path) as pdf:
+        return len(pdf)
+
+
 def _pad_to_canvas_width(image: PIL.Image.Image, canvas_width_px: int) -> PIL.Image.Image:
     """Widens (never stretches) content to canvas_width_px by padding white
     on the right. Needed because printer.printImage() unconditionally
@@ -91,7 +103,11 @@ class DocumentPipeline:
             raise UnsupportedDocumentKindError(f"No renderer registered for {document.kind}")
 
         settings = document.settings
-        raw_pages = renderer.render(document.source_path, width_px, settings.fit_mode)
+        total_pages = _count_pages(document)
+        page_indices = parse_page_range(settings.page_range, total_pages)
+        raw_pages = renderer.render(
+            document.source_path, width_px, settings.fit_mode, page_indices=page_indices
+        )
         target_canvas_width = canvas_width_px or width_px
 
         pages = []
@@ -112,4 +128,12 @@ class DocumentPipeline:
             normalized = normalize_to_1bit(padded, settings.dithering)
             chunks = slice_into_chunks(normalized, chunk_height_px)
             pages.append(RenderedPage(image=normalized, chunks=chunks))
+
+        # N copies (docs/stage5-ux-plan.md M5.2): literally repeating
+        # already-processed RenderedPage entries — PrintJobManager already
+        # inserts a printBreak() between consecutive `pages` entries and
+        # counts every entry's chunks toward progress/resume, so repeating
+        # here needs no separate protocol/resume handling at all.
+        if settings.copies > 1:
+            pages = pages * settings.copies
         return RenderedDocument(pages=pages)

@@ -8,10 +8,19 @@ import PIL.ImageChops
 
 class Renderer(Protocol):
     def render(
-        self, source_path: str, width_px: int, fit_mode: str = "fit_width"
+        self,
+        source_path: str,
+        width_px: int,
+        fit_mode: str = "fit_width",
+        page_indices: list[int] | None = None,
     ) -> list[PIL.Image.Image]:
         """One image per logical page (PdfRenderer may return several;
-        everything else returns exactly one), already fit to width_px."""
+        everything else returns exactly one), already fit to width_px.
+        page_indices (0-based, see utils/page_range.py) restricts which
+        pages get rasterized at all — None means every page. Renderers
+        that only ever produce a single page (image/text) can ignore it;
+        PdfRenderer uses it to skip pages instead of throwing away
+        already-rendered rasters (periprint-spec.md §11 memory NFR)."""
         ...
 
 

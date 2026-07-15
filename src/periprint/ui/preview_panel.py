@@ -109,8 +109,40 @@ class PreviewPanel(ctk.CTkFrame):
             command=self._handle_settings_changed,
         ).pack(side="left", padx=(8, 0))
 
+        page_range_row = ctk.CTkFrame(self, fg_color="transparent")
+        page_range_row.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkLabel(page_range_row, text="Страницы:").pack(side="left")
+        self.page_range_entry = ctk.CTkEntry(page_range_row, placeholder_text="все, напр. 2-4,7")
+        self.page_range_entry.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        # Entries don't have a built-in "value changed" command like
+        # radio/checkbox widgets — re-render on FocusOut/Enter, not every
+        # keystroke: an in-progress range like "2-" is invalid syntax
+        # (utils/page_range.py) and would just show a transient render
+        # error while the user is still typing.
+        self.page_range_entry.bind("<FocusOut>", lambda _e: self._handle_settings_changed())
+        self.page_range_entry.bind("<Return>", lambda _e: self._handle_settings_changed())
+
+        copies_row = ctk.CTkFrame(self, fg_color="transparent")
+        copies_row.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkLabel(copies_row, text="Копий:").pack(side="left")
+        self.copies_entry = ctk.CTkEntry(copies_row, width=60)
+        self.copies_entry.insert(0, "1")
+        self.copies_entry.pack(side="left", padx=(8, 0))
+        self.copies_entry.bind("<FocusOut>", lambda _e: self._handle_settings_changed())
+        self.copies_entry.bind("<Return>", lambda _e: self._handle_settings_changed())
+
     def get_paper_type(self) -> PaperType:
         return _PAPER_TYPE_BY_LABEL[self.paper_type_var.get()]
+
+    def get_page_range(self) -> str:
+        return self.page_range_entry.get().strip()
+
+    def get_copies(self) -> int:
+        try:
+            value = int(self.copies_entry.get().strip())
+        except ValueError:
+            return 1
+        return max(1, value)
 
     def _handle_settings_changed(self) -> None:
         if self._on_settings_changed:

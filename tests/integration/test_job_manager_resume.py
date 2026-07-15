@@ -228,3 +228,25 @@ def test_job_paused_when_choose_paper_type_fails(tmp_path: Path) -> None:
     assert job.status == JobStatus.PAUSED_ERROR
     assert job.completed_chunks == 0
     assert fake.image_send_calls == 0  # must not start sending chunks if setup failed
+
+
+def test_copies_get_a_page_break_between_them(tmp_path: Path) -> None:
+    """docs/stage5-ux-plan.md M5.2: copies are just repeated entries in
+    DocumentPipeline's rendered page list — confirms that actually gets
+    PrintJobManager's existing between-page printBreak() for free, with
+    no dedicated "copies" handling in job_manager.py itself."""
+    fake = FakeRawPrinter()
+    client = _connected_client(fake)
+    event_queue: queue.Queue = queue.Queue()
+    manager = PrintJobManager(DocumentPipeline(), event_queue, client_provider=lambda: client)
+
+    document = _make_text_document(tmp_path, settings=PrintSettings(copies=3))
+    job = PrintJob(id=str(uuid.uuid4()), document=document, printer_profile_id="p1")
+    manager.enqueue(job, width_px=384, chunk_height_px=30)
+    manager._process_job(job)
+
+    assert job.status == JobStatus.DONE
+    # 2 breaks between the 3 copies + 1 trailing tear-off break.
+    assert fake.print_break_calls == 3
+    assert job.total_chunks == fake.image_send_calls
+    assert job.total_chunks % 3 == 0  # 3 identical copies of the same content

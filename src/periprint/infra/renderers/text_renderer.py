@@ -27,7 +27,11 @@ class TextRenderer:
     lines never overflow the printable area."""
 
     def render(
-        self, source_path: str, width_px: int, fit_mode: str = "fit_width"
+        self,
+        source_path: str,
+        width_px: int,
+        fit_mode: str = "fit_width",
+        page_indices: list[int] | None = None,  # always exactly 1 page, ignored
     ) -> list[PIL.Image.Image]:
         text = Path(source_path).read_text(encoding="utf-8", errors="replace")
         font = _load_monospace_font()

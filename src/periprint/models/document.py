@@ -26,6 +26,18 @@ class PrintSettings:
     # trim_to_content_height) to save tape. Not the same axis as
     # fit_mode, which only controls horizontal scaling.
     page_mode: str = "full_page"  # full_page | content_length
+    # periprint-spec.md §3 P1: "2-4,7" style page selection, 1-based, see
+    # utils/page_range.py::parse_page_range(). Empty means all pages —
+    # only meaningful for multi-page documents (PDF); single-page
+    # documents (image/text) always have exactly page "1" regardless.
+    page_range: str = ""
+    # N copies of whatever page_range selects (the whole document if
+    # page_range is empty) — see docs/stage5-ux-plan.md M5.2: implemented
+    # as literal repeated entries in DocumentPipeline's rendered page
+    # list, so the existing between-page printBreak() in
+    # PrintJobManager._process_job() already inserts a break between
+    # copies for free, with no separate protocol/architecture needed.
+    copies: int = 1
 
 
 @dataclass

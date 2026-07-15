@@ -58,7 +58,10 @@ class MainWindow(ctk.CTk):
     ) -> None:
         super().__init__()
         self.title("PeriPrint")
-        self.geometry("900x600")
+        # Tall enough that the settings panel (grown with Stage 5's paper
+        # type/page mode/page range/copies controls) doesn't clip at the
+        # bottom — window is still resizable by the user either way.
+        self.geometry("900x700")
 
         self._printer_manager = printer_manager or PrinterManager()
         self._config_store = config_store or ConfigStore()
@@ -224,6 +227,8 @@ class MainWindow(ctk.CTk):
                 dithering=self.preview_panel.dithering_var.get(),
                 paper_type=self.preview_panel.get_paper_type(),
                 page_mode=self.preview_panel.page_mode_var.get(),
+                page_range=self.preview_panel.get_page_range(),
+                copies=self.preview_panel.get_copies(),
             ),
         )
         self._current_document = document
@@ -253,6 +258,8 @@ class MainWindow(ctk.CTk):
         self._current_document.settings.dithering = self.preview_panel.dithering_var.get()
         self._current_document.settings.paper_type = self.preview_panel.get_paper_type()
         self._current_document.settings.page_mode = self.preview_panel.page_mode_var.get()
+        self._current_document.settings.page_range = self.preview_panel.get_page_range()
+        self._current_document.settings.copies = self.preview_panel.get_copies()
         self._render_and_show_preview()
 
     def _render_and_show_preview(self) -> None:

@@ -99,6 +99,60 @@ def test_page_mode_content_length_trims_blank_pdf_tail(tmp_path: Path) -> None:
     assert trimmed.pages[0].image.height < full_page.pages[0].image.height / 4
 
 
+def test_page_range_selects_only_requested_pdf_pages(tmp_path: Path) -> None:
+    import fitz
+
+    pdf_path = tmp_path / "multi.pdf"
+    document_handle = fitz.open()
+    for _ in range(5):
+        document_handle.new_page(width=200, height=100)
+    document_handle.save(str(pdf_path))
+    document_handle.close()
+
+    document = DocumentItem(id="x", source_path=str(pdf_path), kind=DocumentKind.PDF)
+    document.settings = PrintSettings(page_range="2-3,5")
+
+    rendered = DocumentPipeline().render_document(document, width_px=200, chunk_height_px=5000)
+
+    assert len(rendered.pages) == 3
+
+
+def test_page_range_invalid_syntax_propagates(tmp_path: Path) -> None:
+    import fitz
+
+    pdf_path = tmp_path / "single.pdf"
+    document_handle = fitz.open()
+    document_handle.new_page(width=200, height=100)
+    document_handle.save(str(pdf_path))
+    document_handle.close()
+
+    document = DocumentItem(id="x", source_path=str(pdf_path), kind=DocumentKind.PDF)
+    document.settings = PrintSettings(page_range="not-a-range")
+
+    with pytest.raises(ValueError):
+        DocumentPipeline().render_document(document, width_px=200, chunk_height_px=5000)
+
+
+def test_copies_repeats_rendered_pages(tmp_path: Path) -> None:
+    document = _image_document(tmp_path, width=100, height=50)
+    document.settings = PrintSettings(copies=3, margin_top_px=0, margin_bottom_px=0)
+
+    rendered = DocumentPipeline().render_document(document, width_px=100, chunk_height_px=200)
+
+    assert len(rendered.pages) == 3
+    # Same processed content repeated, not re-rendered from scratch each
+    # time — cheaper, and there's no reason it would differ anyway.
+    assert rendered.pages[0].image is rendered.pages[1].image is rendered.pages[2].image
+
+
+def test_copies_default_is_a_single_page(tmp_path: Path) -> None:
+    document = _image_document(tmp_path, width=100, height=50)
+
+    rendered = DocumentPipeline().render_document(document, width_px=100, chunk_height_px=200)
+
+    assert len(rendered.pages) == 1
+
+
 def test_unsupported_kind_raises(tmp_path: Path) -> None:
     source_path = tmp_path / "note.md"
     source_path.write_text("# heading", encoding="utf-8")
