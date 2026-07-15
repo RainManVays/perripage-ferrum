@@ -298,6 +298,7 @@ class PrintJobManager:
                 return
 
             job.total_chunks = sum(len(page.chunks) for page in rendered.pages)
+            job.total_pages = len(rendered.pages)
             job.status = JobStatus.PRINTING
             self._emit(job)
 
@@ -317,6 +318,7 @@ class PrintJobManager:
             dark_streak = 0
             for page_number, page in enumerate(rendered.pages):
                 is_last_page = page_number == len(rendered.pages) - 1
+                job.current_page = page_number + 1
 
                 for chunk_number, chunk in enumerate(page.chunks):
                     if bail_if_stop_requested():

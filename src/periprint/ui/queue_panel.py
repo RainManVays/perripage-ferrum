@@ -23,8 +23,14 @@ def _format_job_line(job: PrintJob) -> str:
     name = Path(job.document.source_path).name
     status = _STATUS_LABELS[job.status]
     if job.status == JobStatus.PRINTING and job.total_chunks:
+        # Percentage + page number, never "chunk" — that's an internal
+        # thermal-buffer detail a real user has no reason to know about
+        # (docs/stage5-ux-plan.md's post-launch UX fixes).
         percent = round(100 * job.completed_chunks / job.total_chunks)
-        status = f"{status} {job.completed_chunks}/{job.total_chunks} ({percent}%)"
+        if job.total_pages > 1:
+            status = f"{status} {percent}% (стр. {job.current_page}/{job.total_pages})"
+        else:
+            status = f"{status} {percent}%"
     elif job.status == JobStatus.PAUSED_ERROR and job.error_message:
         status = f"{status}: {job.error_message}"
     return f"{name} — {status}"

@@ -3,12 +3,14 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from tkinter import filedialog
 from typing import Any
 
 import customtkinter as ctk
 from tkinterdnd2 import TkinterDnD
 
+from periprint.infra.bt.bluetoothctl_backend import DiscoveredDevice
 from periprint.infra.config_store import ConfigStore
 from periprint.infra.history_store import HistoryEntry, HistoryStore
 from periprint.infra.peripage_client import PeripageClient, PeripageConnectionError
@@ -26,11 +28,12 @@ from periprint.services.pipeline import (
 )
 from periprint.services.printer_manager import PrinterManager
 from periprint.ui.empty_state_panel import EmptyStatePanel
-from periprint.ui.error_dialog import ErrorDialog
+from periprint.ui.error_panel import ErrorPanel
 from periprint.ui.preview_panel import PreviewPanel
 from periprint.ui.printer_panel import PrinterPanel
 from periprint.ui.queue_panel import QueuePanel
-from periprint.ui.settings_dialog import SettingsDialog
+from periprint.ui.scan_panel import ScanPanel
+from periprint.ui.settings_panel import SettingsPanel
 
 _DEFAULT_PREVIEW_MODEL = PrinterModel.A40
 _DEFAULT_CHUNK_HEIGHT_PX = 220
@@ -90,8 +93,6 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
         self._config_store = config_store or ConfigStore()
         self._config = self._config_store.load()
         self._history_store = history_store or HistoryStore()
-        self._settings_dialog: SettingsDialog | None = None
-        self._error_dialog: ErrorDialog | None = None
         self._client: PeripageClient | None = None
         self._active_profile: PrinterProfile | None = None
         self._battery_percent: int | None = None
@@ -102,7 +103,14 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
             self._pipeline, self._event_queue, client_provider=lambda: self._client
         )
         self._job_awaiting_reconnect_id: str | None = None
-        self._is_expanded = False
+        # "empty" | "expanded" | "settings" | "scan" | "error" — which of
+        # the mutually-exclusive full-window views is currently shown.
+        # Nothing in this app spawns a separate OS window for settings/
+        # scanning/errors (docs/stage5-ux-plan.md's post-launch UX fixes:
+        # "мы что в Windows XP?") — every one of them is a view swapped
+        # into the same grid cells via _show_*()/grid_forget(), same as
+        # the empty <-> expanded switch already was.
+        self._current_view = "empty"
         # job_id -> (perf-counter time, completed_chunks) observed the
         # first time each job was seen PRINTING this session — the basis
         # for the ETA estimate in the status bar. Not persisted/resumed
@@ -159,35 +167,82 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self.status_bar = ctk.CTkLabel(self, text="Статус: готово", anchor="w")
 
+        self.settings_panel = SettingsPanel(
+            self,
+            self._printer_manager,
+            on_back=self._close_settings,
+            on_profiles_changed=self._refresh_active_profile,
+            on_scan_requested=self._handle_scan_requested,
+            current_theme=self._config.theme,
+            on_theme_changed=self._handle_theme_changed,
+        )
+        self.scan_panel = ScanPanel(
+            self,
+            on_device_selected=self._handle_scan_device_selected,
+            on_back=self._handle_scan_back,
+        )
+        self.error_panel = ErrorPanel(self)
+
         self._refresh_active_profile()
         self._show_empty_state()
         self.after(100, self._poll_events)
 
-    def _show_empty_state(self) -> None:
+    def _hide_all_views(self) -> None:
+        self.empty_state_panel.grid_forget()
         self.printer_panel.grid_forget()
         self.body.grid_forget()
         self.status_bar.grid_forget()
+        self.settings_panel.grid_forget()
+        self.scan_panel.grid_forget()
+        self.error_panel.grid_forget()
+
+    def _show_empty_state(self) -> None:
+        self._hide_all_views()
         self.empty_state_panel.grid(row=0, column=0, rowspan=3, sticky="nsew")
-        self._is_expanded = False
+        self._current_view = "empty"
 
     def _show_expanded_state(self) -> None:
-        self.empty_state_panel.grid_forget()
+        self._hide_all_views()
         self.printer_panel.grid(row=0, column=0, sticky="ew")
         self.body.grid(row=1, column=0, sticky="nsew")
         self.status_bar.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        self._is_expanded = True
+        self._current_view = "expanded"
+
+    def _show_previous_main_state(self) -> None:
+        """Returns to whichever of empty/expanded actually matches the
+        current queue state right now — not a literal "undo", since e.g.
+        cancelling a job from the error view can itself empty the queue."""
+        if self._job_manager.list_jobs():
+            self._show_expanded_state()
+        else:
+            self._show_empty_state()
 
     def _open_settings(self) -> None:
-        if self._settings_dialog is None or not self._settings_dialog.winfo_exists():
-            self._settings_dialog = SettingsDialog(
-                self,
-                self._printer_manager,
-                on_profiles_changed=self._refresh_active_profile,
-                current_theme=self._config.theme,
-                on_theme_changed=self._handle_theme_changed,
-            )
-        else:
-            self._settings_dialog.focus()
+        self.settings_panel.refresh()
+        self._hide_all_views()
+        self.settings_panel.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        self._current_view = "settings"
+
+    def _close_settings(self) -> None:
+        self._show_previous_main_state()
+
+    def _handle_scan_requested(self) -> None:
+        self._hide_all_views()
+        self.scan_panel.start_scan()
+        self.scan_panel.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        self._current_view = "scan"
+
+    def _handle_scan_device_selected(self, device: DiscoveredDevice) -> None:
+        self.settings_panel.set_scanned_device(device)
+        self._return_to_settings()
+
+    def _handle_scan_back(self) -> None:
+        self._return_to_settings()
+
+    def _return_to_settings(self) -> None:
+        self._hide_all_views()
+        self.settings_panel.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        self._current_view = "settings"
 
     def _handle_theme_changed(self, theme: str) -> None:
         self._config.theme = theme
@@ -349,7 +404,7 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
             return
         # periprint-spec.md §7.4: transition to the expanded state happens
         # on the first accepted file, not before.
-        if not self._is_expanded:
+        if self._current_view != "expanded":
             self._show_expanded_state()
         self._render_and_show_preview()
         self.queue_panel.set_jobs(self._job_manager.list_jobs())
@@ -464,18 +519,26 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
         self.status_bar.configure(text=f"Статус принтера: {label}")
 
     def _progress_text(self, job: PrintJob) -> str:
-        """"чанк X/Y" plus an ETA once enough of *this* job's own progress
-        has been observed to estimate a rate from — periprint-spec.md
-        §7.1's sketch ("00:12 осталось (оценка)"). Deliberately not
-        assuming a fixed rate from the very first chunk: the first chunk
-        after a (re)connect includes one-time setup (choose_paper_type,
-        etc.), so timing it alone would skew the estimate."""
+        """"чанк" is an internal thermal-buffer detail — a real user
+        thinks in page/image/document, essentially never in the printer's
+        own internal slicing (docs/stage5-ux-plan.md's post-launch UX
+        fixes). Shows a percentage (+ "стр. X/Y" when there's more than
+        one page) and an ETA once enough of *this* job's own progress has
+        been observed to estimate a rate from — periprint-spec.md §7.1's
+        sketch ("00:12 осталось (оценка)"). Deliberately not assuming a
+        fixed rate from the very first chunk: the first one after a
+        (re)connect includes one-time setup (choose_paper_type, etc.), so
+        timing it alone would skew the estimate."""
+        percent = round(100 * job.completed_chunks / job.total_chunks)
+        base = f"{percent}%"
+        if job.total_pages > 1:
+            base = f"{base} (стр. {job.current_page}/{job.total_pages})"
+
         now = time.monotonic()
         if job.id not in self._job_progress_start:
             self._job_progress_start[job.id] = (now, job.completed_chunks)
         start_time, start_chunks = self._job_progress_start[job.id]
 
-        base = f"чанк {job.completed_chunks}/{job.total_chunks}"
         elapsed = now - start_time
         done_since_start = job.completed_chunks - start_chunks
         if elapsed < _ETA_MIN_ELAPSED_SECONDS or done_since_start <= 0:
@@ -508,22 +571,31 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
             self.status_bar.configure(
                 text=f"Статус: {job.status.value} — {job.document.source_path}"
             )
-        elif job.status == JobStatus.PAUSED_ERROR and self._error_dialog is None:
-            self._error_dialog = ErrorDialog(
-                self,
+        elif job.status == JobStatus.PAUSED_ERROR and self._current_view != "error":
+            document_name = Path(job.document.source_path).name
+            percent = (
+                round(100 * job.completed_chunks / job.total_chunks) if job.total_chunks else 0
+            )
+            page_info = (
+                f", страница {job.current_page} из {job.total_pages}" if job.total_pages > 1 else ""
+            )
+            self.error_panel.show_error(
                 message=(
-                    f"Не удалось отправить чанк {job.completed_chunks + 1}/{job.total_chunks}.\n"
-                    f"{job.error_message}"
+                    f"Не удалось напечатать «{document_name}»{page_info} "
+                    f"(остановилось на {percent}%).\n{job.error_message}"
                 ),
                 on_reconnect=lambda: self._handle_error_reconnect(job.id),
                 on_cancel=lambda: self._handle_error_cancel(job.id),
             )
+            self._hide_all_views()
+            self.error_panel.grid(row=0, column=0, rowspan=3, sticky="nsew")
+            self._current_view = "error"
 
     def _handle_error_reconnect(self, job_id: str) -> None:
-        self._error_dialog = None
+        self._show_previous_main_state()
         self._job_awaiting_reconnect_id = job_id
         self._connect_async()
 
     def _handle_error_cancel(self, job_id: str) -> None:
-        self._error_dialog = None
+        self._show_previous_main_state()
         self._job_manager.cancel_job(job_id)
