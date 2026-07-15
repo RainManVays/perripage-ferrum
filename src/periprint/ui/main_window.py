@@ -33,6 +33,21 @@ _DEFAULT_PREVIEW_MODEL = PrinterModel.A40
 _DEFAULT_CHUNK_HEIGHT_PX = 220
 _FINISHED_STATUSES = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
 
+# Reverse-engineered from the official app's decompiled code, not just
+# inferred from a live trace — see
+# docs/bluetooth-protocol-trace-analysis.md §7.3.
+_PRINTER_STATUS_LABELS = {
+    "out_of_paper": "бумага закончилась",
+    "cover_open": "крышка открыта",
+    "overheat": "перегрев",
+    "low_battery": "низкий заряд батареи",
+    "cover_closed": "крышка закрыта",
+    "low_mileage": "недостаточный пробег картриджа/головки",
+    "abort_print": "принтер запросил остановку печати",
+    "resume_print": "принтер разрешил продолжить печать",
+    "paper_type_mismatch": "несовпадение типа бумаги",
+}
+
 
 class MainWindow(ctk.CTk):
     def __init__(
@@ -282,8 +297,15 @@ class MainWindow(ctk.CTk):
                 self.status_bar.configure(text=f"Статус: ошибка подключения — {payload}")
             elif event_type == EventType.PRINT_PROGRESS:
                 self._handle_print_progress(payload)
+            elif event_type == EventType.PRINTER_STATUS:
+                self._handle_printer_status(payload)
         if self.winfo_exists():
             self.after(100, self._poll_events)
+
+    def _handle_printer_status(self, payload: tuple[str, str, int]) -> None:
+        _job_id, meaning, _sub = payload
+        label = _PRINTER_STATUS_LABELS.get(meaning, meaning)
+        self.status_bar.configure(text=f"Статус принтера: {label}")
 
     def _handle_print_progress(self, job: PrintJob) -> None:
         self.queue_panel.set_jobs(self._job_manager.list_jobs())

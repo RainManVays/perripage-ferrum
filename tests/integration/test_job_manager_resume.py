@@ -1,6 +1,9 @@
 import queue
+import socket
+import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -96,6 +99,51 @@ def test_job_paused_when_printer_not_connected(tmp_path: Path) -> None:
 
     assert job.status == JobStatus.PAUSED_ERROR
     assert job.completed_chunks == 0
+
+
+def test_printer_abort_status_pauses_job_mid_print(tmp_path: Path) -> None:
+    """A real HCI trace of the official app showed the printer itself can
+    push an "abort" status mid-job (see
+    docs/bluetooth-protocol-trace-analysis.md §4) — the job must pause on
+    that signal rather than plowing through the remaining chunks."""
+    local_sock, remote_sock = socket.socketpair()
+
+    class AbortAfterNCalls(FakeRawPrinter):
+        def __init__(self, abort_after: int) -> None:
+            super().__init__()
+            self._abort_after = abort_after
+
+        def printImage(self, img: Any, delay: float = 0.01) -> None:
+            super().printImage(img, delay=delay)
+            if self.print_image_calls == self._abort_after:
+                remote_sock.sendall(bytes([0xFD, 0x01]))
+                # Real sleep (not the patched job_manager.time.sleep) so the
+                # listener thread's select() cycle has a chance to notice
+                # before the send loop checks the abort flag again.
+                time.sleep(0.3)
+
+    fake = AbortAfterNCalls(abort_after=2)
+    fake.sock = local_sock
+    client = _connected_client(fake)
+    event_queue: queue.Queue = queue.Queue()
+    manager = PrintJobManager(DocumentPipeline(), event_queue, client_provider=lambda: client)
+
+    document = _make_text_document(tmp_path, lines=100)
+    job = PrintJob(id=str(uuid.uuid4()), document=document, printer_profile_id="p1")
+    manager.enqueue(job, width_px=384, chunk_height_px=15)  # many small chunks
+    manager._process_job(job)
+
+    assert job.status == JobStatus.PAUSED_ERROR
+    assert job.error_message is not None
+    assert "abort_print" in job.error_message
+    # Exactly which chunk the abort lands on is inherently timing-dependent
+    # (the listener thread's select() poll cycle racing the main send
+    # loop) — assert the property that actually matters: it stopped early,
+    # not that it landed on one specific chunk index.
+    assert job.completed_chunks >= 2
+    assert job.completed_chunks < job.total_chunks
+
+    remote_sock.close()
 
 
 def test_multi_page_document_gets_page_break_between_pages(tmp_path: Path) -> None:

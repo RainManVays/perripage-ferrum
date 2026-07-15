@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -8,10 +9,13 @@ from collections.abc import Callable
 import PIL.Image
 
 from periprint.infra.peripage_client import PeripageClient
+from periprint.infra.printer_status_listener import PAUSE_WORTHY_STATUSES
 from periprint.models.enums import JobStatus
 from periprint.models.job import PrintJob
 from periprint.services.events import EventType
 from periprint.services.pipeline import DocumentPipeline
+
+logger = logging.getLogger(__name__)
 
 _BASE_PAUSE_SECONDS = 1.0
 _DARK_THRESHOLD = 0.3
@@ -167,65 +171,95 @@ class PrintJobManager:
             self._emit(job)
             return
 
-        job.status = JobStatus.RENDERING
-        self._emit(job)
+        # The printer can push its own spontaneous status packets mid-job —
+        # most importantly an explicit "abort_print" signal (e.g. the user
+        # opened the cover), confirmed via a real HCI trace of the official
+        # app + decompiling it, see
+        # docs/bluetooth-protocol-trace-analysis.md §4/§7.3. Without this,
+        # we only find out something's wrong when a socket write eventually
+        # fails, which can be well after the printer already gave up.
+        abort_requested = threading.Event()
+        last_status_reason: list[str] = []
 
-        width_px, chunk_height_px, canvas_width_px = self._render_targets[job.id]
+        def handle_status(meaning: str, sub: int) -> None:
+            self._event_queue.put((EventType.PRINTER_STATUS, (job.id, meaning, sub)))
+            if meaning in PAUSE_WORTHY_STATUSES:
+                last_status_reason.append(meaning)
+                abort_requested.set()
+
         try:
-            rendered = self._pipeline.render_document(
-                job.document, width_px, chunk_height_px, canvas_width_px
-            )
+            client.start_status_listening(handle_status)
         except Exception as exc:
-            job.status = JobStatus.FAILED
-            job.error_message = str(exc)
-            self._emit(job)
-            return
-
-        job.total_chunks = sum(len(page.chunks) for page in rendered.pages)
-        job.status = JobStatus.PRINTING
-        self._emit(job)
-
-        chunk_index = 0
-        dark_streak = 0
-        for page_number, page in enumerate(rendered.pages):
-            is_last_page = page_number == len(rendered.pages) - 1
-
-            for chunk_number, chunk in enumerate(page.chunks):
-                is_last_chunk_of_page = chunk_number == len(page.chunks) - 1
-                already_sent = chunk_index < job.completed_chunks
-                chunk_index += 1
-                if already_sent:
-                    continue
-
-                try:
-                    client.print_image(chunk, delay=_ROW_DELAY_SECONDS)
-                except Exception as exc:
-                    job.status = JobStatus.PAUSED_ERROR
-                    job.error_message = str(exc)
-                    self._emit(job)
-                    return
-
-                job.completed_chunks += 1
-                self._emit(job)
-
-                if not (is_last_page and is_last_chunk_of_page):
-                    ratio = _black_ratio(chunk)
-                    dark_streak = dark_streak + 1 if ratio >= _DARK_THRESHOLD else 0
-                    time.sleep(_cooldown_seconds(ratio, dark_streak))
-
-            if not is_last_page:
-                try:
-                    client.print_break(_PAGE_BREAK_SIZE)
-                except Exception as exc:
-                    job.status = JobStatus.PAUSED_ERROR
-                    job.error_message = str(exc)
-                    self._emit(job)
-                    return
+            logger.warning("Could not start printer status listening: %s", exc)
 
         try:
-            client.print_break(_PAGE_BREAK_SIZE)
-        except Exception:
-            pass  # trailing tear-off feed is best-effort, not correctness-critical
+            job.status = JobStatus.RENDERING
+            self._emit(job)
 
-        job.status = JobStatus.DONE
-        self._emit(job)
+            width_px, chunk_height_px, canvas_width_px = self._render_targets[job.id]
+            try:
+                rendered = self._pipeline.render_document(
+                    job.document, width_px, chunk_height_px, canvas_width_px
+                )
+            except Exception as exc:
+                job.status = JobStatus.FAILED
+                job.error_message = str(exc)
+                self._emit(job)
+                return
+
+            job.total_chunks = sum(len(page.chunks) for page in rendered.pages)
+            job.status = JobStatus.PRINTING
+            self._emit(job)
+
+            chunk_index = 0
+            dark_streak = 0
+            for page_number, page in enumerate(rendered.pages):
+                is_last_page = page_number == len(rendered.pages) - 1
+
+                for chunk_number, chunk in enumerate(page.chunks):
+                    if abort_requested.is_set():
+                        job.status = JobStatus.PAUSED_ERROR
+                        job.error_message = f"Принтер сообщил: {last_status_reason[-1]}"
+                        self._emit(job)
+                        return
+
+                    is_last_chunk_of_page = chunk_number == len(page.chunks) - 1
+                    already_sent = chunk_index < job.completed_chunks
+                    chunk_index += 1
+                    if already_sent:
+                        continue
+
+                    try:
+                        client.print_image(chunk, delay=_ROW_DELAY_SECONDS)
+                    except Exception as exc:
+                        job.status = JobStatus.PAUSED_ERROR
+                        job.error_message = str(exc)
+                        self._emit(job)
+                        return
+
+                    job.completed_chunks += 1
+                    self._emit(job)
+
+                    if not (is_last_page and is_last_chunk_of_page):
+                        ratio = _black_ratio(chunk)
+                        dark_streak = dark_streak + 1 if ratio >= _DARK_THRESHOLD else 0
+                        time.sleep(_cooldown_seconds(ratio, dark_streak))
+
+                if not is_last_page:
+                    try:
+                        client.print_break(_PAGE_BREAK_SIZE)
+                    except Exception as exc:
+                        job.status = JobStatus.PAUSED_ERROR
+                        job.error_message = str(exc)
+                        self._emit(job)
+                        return
+
+            try:
+                client.print_break(_PAGE_BREAK_SIZE)
+            except Exception:
+                pass  # trailing tear-off feed is best-effort, not correctness-critical
+
+            job.status = JobStatus.DONE
+            self._emit(job)
+        finally:
+            client.stop_status_listening()

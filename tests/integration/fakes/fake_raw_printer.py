@@ -8,7 +8,7 @@ class FakeRawPrinter:
     touching peripage/PyBluez, so PeripageClient's retry/reconnect logic can
     be tested without any real Bluetooth stack installed."""
 
-    def __init__(self, fail_connects: int = 0) -> None:
+    def __init__(self, fail_connects: int = 0, row_bytes: int = 216) -> None:
         self.connected = False
         self.connect_calls = 0
         self.reset_calls = 0
@@ -16,8 +16,10 @@ class FakeRawPrinter:
         self.set_concentration_calls: list[tuple[int, bool]] = []
         self.print_image_calls = 0
         self.print_break_calls = 0
+        self.tell_printer_calls: list[bytes] = []
         self.fail_print_image_on_call: int | None = None
         self._fail_connects = fail_connects
+        self._row_bytes = row_bytes
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -48,3 +50,9 @@ class FakeRawPrinter:
 
     def getDeviceBattery(self) -> int:
         return 100
+
+    def getRowBytes(self) -> int:
+        return self._row_bytes
+
+    def tellPrinter(self, byteseq: bytes) -> None:
+        self.tell_printer_calls.append(bytes(byteseq))

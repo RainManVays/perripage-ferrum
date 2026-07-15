@@ -8,3 +8,4 @@ class EventType(StrEnum):
     CONNECTION_ERROR = "connection_error"
     PRINT_PROGRESS = "print_progress"
     PRINT_ERROR = "print_error"
+    PRINTER_STATUS = "printer_status"

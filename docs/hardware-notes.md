@@ -175,3 +175,46 @@ content sizes/darkness — to nail down the full header format and confirm
 whether it lifts the current chunk-height/width-safety workarounds
 entirely), rather than continuing to patch around the old `0x1d763000` path
 indefinitely.
+
+## Protocol implementation phase (2026-07-15) — decompiled official app, real hardware results
+
+Following `docs/research.md` (APK decompilation, security review — no backdoor found) and
+`docs/bluetooth-protocol-trace-analysis.md` §7 (byte-exact opcode table from the decompiled
+code, not just trace guesses), implemented and tested against this same A40 several new
+`PeripageClient` capabilities from `docs/printer-protocol-implementation-plan.md`:
+
+- **`PrinterStatusListener`** (async abort/resume/paper/cover/battery status packets) — wired
+  into `PrintJobManager`, connects/starts without error on real hardware, no interference with
+  normal printing observed. **Confirmed live end-to-end**: printed a real multi-chunk job
+  through the actual app (16 chunks, small `chunk_height_px=25` to spread the job over ~15-20s),
+  physically opened the printer's cover mid-job at chunk 9/16 (~9.5s in) — the listener caught
+  `cover_open` (0xFF 0x02) immediately, `PrintJobManager` paused the job
+  (`JobStatus.PAUSED_ERROR`, `error_message="Принтер сообщил: cover_open"`) instead of
+  continuing to blindly send chunks, and the physical printer stopped printing at the exact same
+  moment the cover was opened — full agreement between the software's view and physical reality.
+  Note: the trigger observed was `cover_open`, not `abort_print`/`fd01` (the one seen in the
+  original Stage 4 trace) — both are handled identically (both are in
+  `PAUSE_WORTHY_STATUSES`), but it's worth knowing these are two distinct real signals this
+  printer sends for different physical causes, not the same event under two names.
+- **`print_image_no_height_limit()`** (honest 16-bit height, one `reset()` per image instead of
+  one per 255-row library-internal slice) — **confirmed working**: printed a 300-row striped
+  test image as a single continuous command, no corruption/discontinuity at the old 255-row
+  boundary. Some residual pixel-level banding remains, consistent with the paper-stock-quality
+  observation from Stage 0, not a protocol issue.
+- **`print_image_fast()`** (new `0x1f` zlib-compressed protocol) — **confirmed BROKEN**: sending
+  a `zlib.compress()`-produced payload made the printer hang/power off. Recovered fully after a
+  manual restart (battery reads normally, a subsequent print via the known-good
+  `print_image_no_height_limit()` path worked immediately) — so this is a firmware-side rejection
+  of our specific compressed byte stream, not lasting hardware damage. Root cause not
+  identified; leading suspicion is a deflate-window-size mismatch (zlib.compress() defaults to a
+  32KB window; an embedded decompressor may expect much less and not fail gracefully on a
+  bigger one than it supports). **Do not use `print_image_fast()`** until this is root-caused —
+  see the method's docstring in `infra/peripage_client.py` and the Phase 5 section of
+  `printer-protocol-implementation-plan.md` for what to try next.
+- `set_concentration_raw()`/`choose_paper_type()` — implemented and unit-tested.
+  Real-hardware A/B comparison (concentration 2 vs 3 vs 4, 3 labeled bar-count groups printed
+  back to back) — **no visible density difference** between 2/3/4 on this unit. The command is
+  accepted without error at all three values (confirming the library's 0-2 clamp is needlessly
+  narrow, per the decompiled app), but going past 2 isn't worth doing by default here — keep
+  concentration=2 as the practical default, this bypass exists for units/firmware where it might
+  matter more, not this one.
