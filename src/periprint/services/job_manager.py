@@ -43,6 +43,16 @@ _PAGE_BREAK_SIZE = 60
 # its last content stuck inside the printer, invisible/untearable, until
 # an extra ~90mm of feed was sent manually. 255 (printBreak's max, ~33mm)
 # is used only for this final tear-off, never between pages/chunks.
+#
+# WORKAROUND, not a general solution: calibrated only against plain
+# continuous roll paper printing our own test content, with no inherent
+# concept of a "page". Revisit once page-format printing exists (Stage 5
+# M5.1 — full-page A4/A5/Letter mode, docs/stage5-ux-plan.md): a rendered
+# document may already carry its own bottom margin (from the source
+# Word/PDF, or PrintSettings.margin_bottom_px), in which case adding a
+# fixed 33mm on top could be redundant or even wrong for that paper/
+# format combination — this constant likely needs to become
+# format/paper-aware rather than a single global default.
 _FINAL_TEAR_OFF_SIZE = 255
 
 
