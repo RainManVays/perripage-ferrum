@@ -36,6 +36,14 @@ _FONT_CANDIDATES = (
 )
 _FONT_SIZE_PX = 24
 
+# Matches services/job_manager.py's _FINAL_TEAR_OFF_SIZE — a courtesy
+# trailing feed so the user can actually tear off the receipt after a
+# test, not a value under test itself. Do NOT use this for printBreak()
+# calls that are the thing being measured/compared (break-test,
+# break-after-image-test, listener-break-test's GAP A/B/C) — those need
+# to stay at whatever size is actually being calibrated.
+_FINAL_TEAR_OFF_SIZE = 255
+
 
 def _load_monospace_font() -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
     for path in _FONT_CANDIDATES:
@@ -83,7 +91,7 @@ def cmd_text(args: argparse.Namespace) -> None:
     try:
         printer.setConcentration(args.concentration, wait=True)
         printer.printlnASCII(args.text)
-        printer.printBreak(60)
+        printer.printBreak(_FINAL_TEAR_OFF_SIZE)
     finally:
         printer.disconnect()
 
@@ -156,7 +164,7 @@ def cmd_heat_test(args: argparse.Namespace) -> None:
             if i < len(values) - 1:
                 print(f"pausing {args.pause}s to cool down...")
                 time.sleep(args.pause)
-        printer.printBreak(60)
+        printer.printBreak(_FINAL_TEAR_OFF_SIZE)
         print("done — compare groups for visible darkness/contrast/bleed differences.")
     finally:
         printer.disconnect()
@@ -174,7 +182,7 @@ def cmd_chunk_test(args: argparse.Namespace) -> None:
             if i < args.chunks - 1:
                 print(f"pausing {args.pause}s to cool down...")
                 time.sleep(args.pause)
-        printer.printBreak(60)
+        printer.printBreak(_FINAL_TEAR_OFF_SIZE)
         print("done — inspect the printout for stalls/skips/uneven darkness.")
     finally:
         printer.disconnect()
@@ -360,7 +368,7 @@ def cmd_listener_break_test(args: argparse.Namespace) -> None:
         client.stop_status_listening()
 
         print_cube(4)
-        client.print_break(60)
+        client.print_break(_FINAL_TEAR_OFF_SIZE)  # courtesy tear-off, not part of the A/B/C test
         print("done — compare gap A/B/C against the 10mm cube height, and against each other.")
     finally:
         client.disconnect()
@@ -377,7 +385,7 @@ def cmd_gradient_test(args: argparse.Namespace) -> None:
         width = printer.getRowWidth()
         image = _gradient_test_image(width)
         printer.printImage(image, delay=args.delay)
-        printer.printBreak(60)
+        printer.printBreak(_FINAL_TEAR_OFF_SIZE)
         print("done — inspect how continuous tone renders as a dithered dot pattern.")
     finally:
         printer.disconnect()
