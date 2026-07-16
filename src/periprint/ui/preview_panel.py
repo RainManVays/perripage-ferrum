@@ -17,11 +17,13 @@ _PAPER_TYPE_BY_LABEL = {label: paper_type for paper_type, label in _PAPER_TYPE_L
 
 # docs/stage5-ux-plan.md M5.5 — imposition (see PageFormat's own docstring
 # for why the enum values aren't literally named A5/A6). UI copy uses the
-# user's own vocabulary even though the internal names are generic.
+# user's own vocabulary even though the internal names are generic. Not
+# "2/4 части" — a source shorter than one A5/A6 page becomes a single
+# piece, only genuinely tall content splits across more than one.
 _PAGE_FORMAT_LABELS = {
-    PageFormat.NATIVE: "Обычный (без разбиения)",
-    PageFormat.HALF: "А5 (2 части, повёрнуто)",
-    PageFormat.QUARTER: "А6 (4 части, повёрнуто)",
+    PageFormat.NATIVE: "Обычный (во всю ширину)",
+    PageFormat.HALF: "А5 (148×210мм)",
+    PageFormat.QUARTER: "А6 (105×148мм)",
     PageFormat.CUSTOM: "Свой размер",
 }
 _PAGE_FORMAT_BY_LABEL = {label: fmt for fmt, label in _PAGE_FORMAT_LABELS.items()}

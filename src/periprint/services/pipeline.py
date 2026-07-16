@@ -10,7 +10,6 @@ from periprint.infra.renderers.base import (
     normalize_to_1bit,
     rotate_page,
     slice_into_chunks,
-    split_into_grid,
     split_into_tiles,
     trim_to_content_height,
 )
@@ -92,77 +91,63 @@ def _count_pages(document: DocumentItem) -> int:
         return len(pdf)
 
 
-def _shrink_tile_if_wider_than(tile: PIL.Image.Image, width_px: int) -> PIL.Image.Image:
-    """Only re-fits a tile down to width_px if it's actually wider —
-    unconditionally re-fitting every tile (an earlier, real bug: reported
-    live as "печатает увеличенную полноразмерную страницу... но не
-    вертикально, а горизонтально") stretched each rotated tile *back up*
-    to the full roll width, which defeats the entire point of imposition:
-    a real A5 tile is supposed to end up narrower than a "A4"-equivalent
-    canvas (~70% of the width, matching A5's real 148mm vs A4's 210mm) —
-    _pad_to_canvas_width below already pads that narrower content out with
-    blank margin, exactly like any other narrower-than-canvas content in
-    this pipeline. Only genuinely oversized tiles (source content taller
-    than it is wide by more than the tile_count, an unusual shape) need
-    shrinking here at all."""
-    if tile.width <= width_px:
-        return tile
-    return fit_to_width(tile, width_px, "fit_width")
+# Real ISO paper dimensions in mm (portrait) used as HALF/QUARTER's target
+# tile size — see _apply_page_format's docstring for why these aren't
+# derived by cropping a fixed number of pieces out of the page anymore.
+_FORMAT_TARGET_MM: dict[PageFormat, tuple[float, float]] = {
+    PageFormat.HALF: (148.0, 210.0),  # real A5
+    PageFormat.QUARTER: (105.0, 148.0),  # real A6
+}
 
 
 def _apply_page_format(
     raw_page: PIL.Image.Image, settings: PrintSettings, width_px: int
 ) -> list[PIL.Image.Image]:
-    """docs/stage5-ux-plan.md M5.5 postmortem #2 (real bug, found via a
-    hand-traced diagram after live testing, not guessed): imposition MUST
-    split the page first, while it's still in its original, unrotated
-    shape — HALF/QUARTER's split always cuts by height, so splitting an
-    *already globally-rotated* page (the previous order) cut across the
-    rotated content instead of along the original top/bottom halves,
-    mixing both halves into every tile whenever rotation_degrees was
-    anything but 0. rotation_degrees is instead applied to each tile
-    *after* it's been correctly split out — independent of imposition's
-    own fixed per-tile 90° reorientation (rotate_each), so "Поворот"
-    behaves the same regardless of which "Формат" is selected, and also
-    doubles as a manual override for split_into_tiles' own untested
-    rotation direction (flip to 180° if it comes out backwards on real
-    hardware).
+    """docs/stage5-ux-plan.md M5.5 postmortem #4 (real bug, reported live:
+    "он обрезан, опять" — a landscape source photo was being cropped in
+    half, not scaled down): HALF/QUARTER used to always crop the page into
+    a *fixed* count of pieces (2 or 4) at full original scale, discarding
+    whatever fell outside each piece — correct only when the source
+    happens to be exactly as tall as N target pages' worth of content
+    (e.g. a real A4 PDF page), destructive for anything shorter (a single
+    photo gets sliced through the middle). Fixed to match CUSTOM's
+    existing, already-correct behavior: scale the whole page down to the
+    format's target width (148mm for A5, 105mm for A6 — nothing outside
+    the frame is lost, just shrunk) and only paginate into multiple
+    physical pieces if the scaled result is *actually* taller than one
+    target page — a short/landscape source cleanly becomes a single tile,
+    a genuinely tall document still splits across as many pages as it
+    needs (same page count as before for actually-A4-shaped content,
+    since scaling a real A4 page to A5's width naturally yields ~2 A5-tall
+    pages worth of height, ~4 for A6). This also drops the per-piece 90°
+    auto-rotation from earlier postmortems entirely: with scaling instead
+    of cropping there is no "landscape band that must be rotated to reach
+    A5's portrait shape" anymore — content stays in its own orientation,
+    rotation_degrees is the only rotation control left, same as CUSTOM."""
+    if settings.page_format in _FORMAT_TARGET_MM:
+        target_width_mm, target_height_mm = _FORMAT_TARGET_MM[settings.page_format]
+    elif settings.page_format == PageFormat.CUSTOM:
+        target_width_mm = settings.custom_tile_width_mm
+        target_height_mm = settings.custom_tile_height_mm
+    else:
+        # NATIVE — no imposition, rotation fills the full canvas width
+        # (the standalone "rotate my sideways photo" case).
+        page = rotate_page(raw_page, settings.rotation_degrees)
+        return [fit_to_width(page, width_px, "fit_width")]
 
-    Postmortem #3: QUARTER used the same 1-D 4-band split as HALF (just
-    with 4 bands instead of 2), which produces oddly elongated strips, not
-    real A6 proportions. Confirmed against a hand-drawn packing diagram
-    from the user (2x2 grid of A6 cells tiling one A4-equivalent sheet,
-    each cell labeled "0°" — i.e. correctly shaped with no rotation at
-    all): a plain 2x2 grid of the *unrotated* page already lands on real
-    A6 dimensions on its own, unlike HALF's bands (landscape-shaped,
-    genuinely need a 90° rotation to reach A5's portrait shape)."""
-    if settings.page_format == PageFormat.HALF:
-        return [
-            _shrink_tile_if_wider_than(rotate_page(tile, settings.rotation_degrees), width_px)
-            for tile in split_into_tiles(raw_page, 2, rotate_each=True)
-        ]
-    if settings.page_format == PageFormat.QUARTER:
-        # 2x2 grid, NOT rotated by default — unlike HALF, a plain quadrant
-        # of an unrotated "A4"-equivalent page already lands on real A6
-        # proportions with no rotation needed (see split_into_grid()).
-        return [
-            _shrink_tile_if_wider_than(rotate_page(tile, settings.rotation_degrees), width_px)
-            for tile in split_into_grid(raw_page, 2, 2, rotate_each=False)
-        ]
-    if settings.page_format == PageFormat.CUSTOM:
-        tile_width_px = mm_to_px(settings.custom_tile_width_mm)
-        page = fit_to_width(raw_page, tile_width_px, "fit_width")
-        tile_height_px = mm_to_px(settings.custom_tile_height_mm)
-        tile_count = max(1, -(-page.height // tile_height_px))  # ceil division
-        return [
-            _shrink_tile_if_wider_than(rotate_page(tile, settings.rotation_degrees), width_px)
-            for tile in split_into_tiles(page, tile_count, rotate_each=False)
-        ]
-    # NATIVE — no imposition, rotation applies to the whole page and fills
-    # the full canvas width (the standalone "rotate my sideways photo"
-    # case) rather than only shrinking if it overflows.
     page = rotate_page(raw_page, settings.rotation_degrees)
-    return [fit_to_width(page, width_px, "fit_width")]
+    # Clamped to width_px: target_width_mm is a fixed real-world size
+    # (148mm for A5, 105mm for A6) independent of which printer model is
+    # active — on a narrow-roll model (e.g. the A6 line, ~48mm real width)
+    # the requested size may simply not be physically achievable. Scaling
+    # down further to whatever the active printer *can* do is the safe
+    # fallback; _pad_to_canvas_width later on only ever widens, never
+    # shrinks, so this has to be enforced here.
+    tile_width_px = min(mm_to_px(target_width_mm), width_px)
+    page = fit_to_width(page, tile_width_px, "fit_width")
+    tile_height_px = mm_to_px(target_height_mm)
+    tile_count = max(1, -(-page.height // tile_height_px))  # ceil division
+    return split_into_tiles(page, tile_count)
 
 
 def _pad_to_canvas_width(image: PIL.Image.Image, canvas_width_px: int) -> PIL.Image.Image:

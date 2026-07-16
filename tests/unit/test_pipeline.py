@@ -153,114 +153,66 @@ def test_copies_default_is_a_single_page(tmp_path: Path) -> None:
     assert len(rendered.pages) == 1
 
 
-def test_page_format_half_tiles_are_padded_not_stretched(tmp_path: Path) -> None:
-    """Real bug found via live hardware testing after this feature first
-    shipped: an earlier version unconditionally re-fit each rotated tile
-    back to width_px, stretching half of the page back up to look like an
-    enlarged, distorted near-full page ("печатает увеличенную
-    полноразмерную страницу... но не вертикально, а горизонтально")
-    instead of a correctly-scaled, narrower A5-equivalent piece padded
-    with blank space — exactly like any other narrower-than-canvas
-    content in this pipeline (_pad_to_canvas_width). The source here is
-    solid black specifically so a stretch bug is unmistakable: a uniform
-    color stretched to any width is still 100% that color, so genuine
-    white padding pixels only appear if the tile was correctly left
-    narrower, not stretched."""
+def test_page_format_half_does_not_crop_short_content(tmp_path: Path) -> None:
+    """docs/stage5-ux-plan.md M5.5 postmortem #4 — the real bug: reported
+    live as "он обрезан, опять" (a landscape photo got sliced in half). An
+    earlier version always cropped the page into a *fixed* 2 pieces at
+    full scale, discarding whatever fell outside each band — destructive
+    whenever the source isn't already ~2 A5-heights tall (e.g. any single
+    photo). Fixed to scale the whole page down to A5's width first (no
+    content lost, just shrunk) and only paginate if the *scaled* result is
+    actually taller than one A5 page. A short/landscape source must land
+    as exactly one page with all its content intact."""
+    document = _image_document(tmp_path, width=1000, height=200)  # landscape, like a photo
+    document.settings = PrintSettings(
+        page_format=PageFormat.HALF, margin_top_px=0, margin_bottom_px=0, dithering=False
+    )
+
+    rendered = DocumentPipeline().render_document(document, width_px=1664, chunk_height_px=50000)
+
+    assert len(rendered.pages) == 1
+
+
+def test_page_format_quarter_does_not_crop_short_content(tmp_path: Path) -> None:
+    document = _image_document(tmp_path, width=1000, height=200)
+    document.settings = PrintSettings(
+        page_format=PageFormat.QUARTER, margin_top_px=0, margin_bottom_px=0, dithering=False
+    )
+
+    rendered = DocumentPipeline().render_document(document, width_px=1664, chunk_height_px=50000)
+
+    assert len(rendered.pages) == 1
+
+
+def test_page_format_half_still_paginates_genuinely_tall_content(tmp_path: Path) -> None:
+    """The other half of the postmortem #4 fix: content that's actually
+    taller than one A5 page (once scaled to A5's width) must still split
+    across as many pages as it needs — the fix is "don't force a fixed
+    count", not "never split"."""
+    document = _image_document(tmp_path, width=1000, height=3000)  # tall
+    document.settings = PrintSettings(
+        page_format=PageFormat.HALF, margin_top_px=0, margin_bottom_px=0, dithering=False
+    )
+
+    rendered = DocumentPipeline().render_document(document, width_px=1664, chunk_height_px=50000)
+
+    assert len(rendered.pages) > 1
+
+
+def test_page_format_half_target_width_clamped_to_printer_width(tmp_path: Path) -> None:
+    """A5's real target width (148mm ~= 1183px at 203dpi) can exceed a
+    narrow-roll printer model's own safe content width (e.g. ~384px for
+    the A6 hardware line) — clamp to whatever the active printer can
+    actually do rather than asking _pad_to_canvas_width to shrink
+    something it only ever widens."""
     document = _image_document(tmp_path, width=200, height=280)
     document.settings = PrintSettings(
         page_format=PageFormat.HALF, margin_top_px=0, margin_bottom_px=0, dithering=False
     )
 
-    rendered = DocumentPipeline().render_document(document, width_px=200, chunk_height_px=5000)
+    rendered = DocumentPipeline().render_document(document, width_px=384, chunk_height_px=50000)
 
-    assert len(rendered.pages) == 2
-    for page in rendered.pages:
-        image = page.image
-        assert image.getpixel((5, 5)) == 0  # content (black) preserved
-        assert image.getpixel((image.width - 5, 5)) != 0  # padded blank, not stretched
-
-
-def test_page_format_quarter_tiles_are_padded_not_stretched(tmp_path: Path) -> None:
-    document = _image_document(tmp_path, width=200, height=280)
-    document.settings = PrintSettings(
-        page_format=PageFormat.QUARTER, margin_top_px=0, margin_bottom_px=0, dithering=False
-    )
-
-    rendered = DocumentPipeline().render_document(document, width_px=200, chunk_height_px=5000)
-
-    assert len(rendered.pages) == 4
-    for page in rendered.pages:
-        image = page.image
-        assert image.getpixel((5, 5)) == 0
-        assert image.getpixel((image.width - 5, 5)) != 0
-
-
-def test_page_format_quarter_splits_as_2x2_grid_unrotated(tmp_path: Path) -> None:
-    """docs/stage5-ux-plan.md M5.5 postmortem #3: QUARTER used to be a 1x4
-    horizontal-strip split (each strip individually rotated 90), giving
-    oddly elongated ~70x200-ish tiles instead of real A6 proportions.
-    Confirmed against a user-drawn packing diagram: a plain 2x2 grid of
-    the *unrotated* page (no rotation at all) already lands on real A6
-    proportions. Tile height (half the source height) is the clean
-    discriminator versus the old 1x4-strip-then-rotate shape, whose
-    height would instead equal width_px (200) after its own rotation."""
-    document = _image_document(tmp_path, width=200, height=280)
-    document.settings = PrintSettings(
-        page_format=PageFormat.QUARTER, margin_top_px=0, margin_bottom_px=0, dithering=False
-    )
-
-    rendered = DocumentPipeline().render_document(document, width_px=200, chunk_height_px=5000)
-
-    assert len(rendered.pages) == 4
-    for page in rendered.pages:
-        assert page.image.height == 140  # 280 / 2 rows, not the old 1x4 strip's 200
-
-
-def test_page_format_half_tile_wider_than_canvas_is_shrunk(tmp_path: Path) -> None:
-    """Edge case the padding-not-stretching fix above must NOT break: a
-    source shaped so unusually tall/narrow that even a rotated half-tile
-    would come out *wider* than the canvas needs an actual shrink (just
-    not the unconditional one that caused the bug for the normal case)."""
-    document = _image_document(tmp_path, width=50, height=1000)
-    document.settings = PrintSettings(
-        page_format=PageFormat.HALF, margin_top_px=0, margin_bottom_px=0, dithering=False
-    )
-
-    rendered = DocumentPipeline().render_document(document, width_px=50, chunk_height_px=5000)
-
-    assert len(rendered.pages) == 2
-    for page in rendered.pages:
-        assert page.image.width == 50
-
-
-def test_rotation_applies_per_tile_after_split_not_to_whole_page(tmp_path: Path) -> None:
-    """docs/stage5-ux-plan.md M5.5 postmortem #2: rotation_degrees used to
-    apply to the *whole page* before HALF's own split — since the split
-    always cuts by height, splitting an already-90-rotated (now landscape)
-    page sliced across the two original halves instead of along them,
-    mixing both into every tile. Fixed: split first (clean halves), then
-    rotate each tile independently. A 90 rotation from imposition's own
-    rotate_each plus a further 90 from rotation_degrees here lands each
-    tile back at its pre-imposition band shape (200x140), not some
-    mixed/reshaped page — the dimensions alone are enough to prove the
-    split happened on the *original* page, not a pre-rotated one (a
-    pre-rotated 200x280 page refit-then-split would produce a completely
-    different tile count/shape, not two clean 200x140 tiles)."""
-    document = _image_document(tmp_path, width=200, height=280)
-    document.settings = PrintSettings(
-        page_format=PageFormat.HALF,
-        rotation_degrees=90,
-        margin_top_px=0,
-        margin_bottom_px=0,
-        dithering=False,
-    )
-
-    rendered = DocumentPipeline().render_document(document, width_px=200, chunk_height_px=5000)
-
-    assert len(rendered.pages) == 2
-    for page in rendered.pages:
-        assert page.image.width == 200
-        assert page.image.height == 140
+    assert rendered.pages[0].image.width == 384
 
 
 def test_rotation_alone_rotates_the_whole_page_without_splitting(tmp_path: Path) -> None:
@@ -288,11 +240,29 @@ def test_page_format_custom_splits_by_explicit_mm_tile_size(tmp_path: Path) -> N
         dithering=False,
     )
 
+    # width_px=300 is wide enough that the custom 203px target isn't
+    # clamped (see the dedicated clamp test below) — width 100px scaled up
+    # to the printer's 300px, then down to the custom 203px width -> height
+    # scales proportionally to 2030px -> split into ceil(2030/203) = 10.
+    rendered = DocumentPipeline().render_document(document, width_px=300, chunk_height_px=5000)
+
+    assert len(rendered.pages) == 10
+
+
+def test_page_format_custom_target_width_clamped_to_printer_width(tmp_path: Path) -> None:
+    document = _image_document(tmp_path, width=100, height=1000)
+    document.settings = PrintSettings(
+        page_format=PageFormat.CUSTOM,
+        custom_tile_width_mm=25.4,  # -> 203px, wider than width_px below
+        custom_tile_height_mm=25.4,
+        margin_top_px=0,
+        margin_bottom_px=0,
+        dithering=False,
+    )
+
     rendered = DocumentPipeline().render_document(document, width_px=100, chunk_height_px=5000)
 
-    # width 100px re-fit to custom width 203px -> height scales
-    # proportionally to 2030px -> split into ceil(2030/203) = 10 tiles.
-    assert len(rendered.pages) == 10
+    assert rendered.pages[0].image.width == 100
 
 
 def test_unsupported_kind_raises(tmp_path: Path) -> None:

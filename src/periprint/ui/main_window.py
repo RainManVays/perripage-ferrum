@@ -35,6 +35,7 @@ from periprint.ui.printer_panel import PrinterPanel
 from periprint.ui.queue_panel import QueuePanel
 from periprint.ui.scan_panel import ScanPanel
 from periprint.ui.settings_panel import SettingsPanel
+from periprint.utils.version import app_version
 
 _DEFAULT_PREVIEW_MODEL = PrinterModel.A40
 _DEFAULT_CHUNK_HEIGHT_PX = 220
@@ -84,7 +85,11 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
     ) -> None:
         super().__init__()
         self.TkdndVersion = TkinterDnD._require(self)
-        self.title("PeriPrint")
+        # Version in the title (not just "PeriPrint") so a running
+        # instance's exact code state is visible at a glance — this
+        # session hit "are you sure you restarted after the fix?" more
+        # than once (docs/stage5-ux-plan.md M5.5 postmortems).
+        self.title(f"PeriPrint {app_version()}")
         # Tall enough that the settings panel (grown with Stage 5's paper
         # type/page mode/page range/copies controls) doesn't clip at the
         # bottom — window is still resizable by the user either way.

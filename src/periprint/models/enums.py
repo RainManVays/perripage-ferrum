@@ -28,18 +28,22 @@ class DocumentKind(StrEnum):
 
 
 class PageFormat(StrEnum):
-    """Imposition — splitting an already-rendered page (full roll width,
-    de-facto "A4"-equivalent, see printer_specs.safe_content_width_px) into
-    N physically separate, individually-rotated pieces, printed back to
-    back with the existing between-page printBreak() as the cut line
-    (docs/stage5-ux-plan.md M5.5). Deliberately NOT named A5/A6 — those
-    names are already PrinterModel's (a different axis: fixed roll width
-    per hardware model, not user-selectable per job); UI labels still say
-    "А5"/"А6" since that's the user's own vocabulary."""
+    """Target page size the rendered content is scaled down to fit (never
+    cropped — docs/stage5-ux-plan.md M5.5 postmortem #4: an earlier
+    crop-based design sliced a landscape photo in half instead of shrinking
+    it). If the scaled content is taller than one target page, it
+    paginates across as many physical pieces as it actually needs, printed
+    back to back with the existing between-page printBreak() as the cut
+    line — HALF/QUARTER don't always mean "exactly 2/4 pieces"; a source
+    shorter than one target page becomes a single piece. Deliberately NOT
+    named A5/A6 — those names are already PrinterModel's (a different
+    axis: fixed roll width per hardware model, not user-selectable per
+    job); UI labels still say "А5"/"А6" since that's the user's own
+    vocabulary."""
 
-    NATIVE = "native"  # today's behavior — no imposition
-    HALF = "half"  # 2 pieces ("А5" in the UI)
-    QUARTER = "quarter"  # 4 pieces ("А6" in the UI)
+    NATIVE = "native"  # today's behavior — no imposition, fills the roll width
+    HALF = "half"  # target width/height = real A5 (148x210mm)
+    QUARTER = "quarter"  # target width/height = real A6 (105x148mm)
     CUSTOM = "custom"  # explicit tile size in mm
 
 
