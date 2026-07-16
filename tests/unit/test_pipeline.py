@@ -195,6 +195,27 @@ def test_page_format_quarter_tiles_are_padded_not_stretched(tmp_path: Path) -> N
         assert image.getpixel((image.width - 5, 5)) != 0
 
 
+def test_page_format_quarter_splits_as_2x2_grid_unrotated(tmp_path: Path) -> None:
+    """docs/stage5-ux-plan.md M5.5 postmortem #3: QUARTER used to be a 1x4
+    horizontal-strip split (each strip individually rotated 90), giving
+    oddly elongated ~70x200-ish tiles instead of real A6 proportions.
+    Confirmed against a user-drawn packing diagram: a plain 2x2 grid of
+    the *unrotated* page (no rotation at all) already lands on real A6
+    proportions. Tile height (half the source height) is the clean
+    discriminator versus the old 1x4-strip-then-rotate shape, whose
+    height would instead equal width_px (200) after its own rotation."""
+    document = _image_document(tmp_path, width=200, height=280)
+    document.settings = PrintSettings(
+        page_format=PageFormat.QUARTER, margin_top_px=0, margin_bottom_px=0, dithering=False
+    )
+
+    rendered = DocumentPipeline().render_document(document, width_px=200, chunk_height_px=5000)
+
+    assert len(rendered.pages) == 4
+    for page in rendered.pages:
+        assert page.image.height == 140  # 280 / 2 rows, not the old 1x4 strip's 200
+
+
 def test_page_format_half_tile_wider_than_canvas_is_shrunk(tmp_path: Path) -> None:
     """Edge case the padding-not-stretching fix above must NOT break: a
     source shaped so unusually tall/narrow that even a rotated half-tile

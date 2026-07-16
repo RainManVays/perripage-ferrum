@@ -10,6 +10,7 @@ from periprint.infra.renderers.base import (
     normalize_to_1bit,
     rotate_page,
     slice_into_chunks,
+    split_into_grid,
     split_into_tiles,
     trim_to_content_height,
 )
@@ -125,16 +126,28 @@ def _apply_page_format(
     behaves the same regardless of which "Формат" is selected, and also
     doubles as a manual override for split_into_tiles' own untested
     rotation direction (flip to 180° if it comes out backwards on real
-    hardware)."""
+    hardware).
+
+    Postmortem #3: QUARTER used the same 1-D 4-band split as HALF (just
+    with 4 bands instead of 2), which produces oddly elongated strips, not
+    real A6 proportions. Confirmed against a hand-drawn packing diagram
+    from the user (2x2 grid of A6 cells tiling one A4-equivalent sheet,
+    each cell labeled "0°" — i.e. correctly shaped with no rotation at
+    all): a plain 2x2 grid of the *unrotated* page already lands on real
+    A6 dimensions on its own, unlike HALF's bands (landscape-shaped,
+    genuinely need a 90° rotation to reach A5's portrait shape)."""
     if settings.page_format == PageFormat.HALF:
         return [
             _shrink_tile_if_wider_than(rotate_page(tile, settings.rotation_degrees), width_px)
             for tile in split_into_tiles(raw_page, 2, rotate_each=True)
         ]
     if settings.page_format == PageFormat.QUARTER:
+        # 2x2 grid, NOT rotated by default — unlike HALF, a plain quadrant
+        # of an unrotated "A4"-equivalent page already lands on real A6
+        # proportions with no rotation needed (see split_into_grid()).
         return [
             _shrink_tile_if_wider_than(rotate_page(tile, settings.rotation_degrees), width_px)
-            for tile in split_into_tiles(raw_page, 4, rotate_each=True)
+            for tile in split_into_grid(raw_page, 2, 2, rotate_each=False)
         ]
     if settings.page_format == PageFormat.CUSTOM:
         tile_width_px = mm_to_px(settings.custom_tile_width_mm)

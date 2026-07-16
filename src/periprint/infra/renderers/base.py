@@ -122,6 +122,36 @@ def split_into_tiles(
     return tiles
 
 
+def split_into_grid(
+    image: PIL.Image.Image, cols: int, rows: int, *, rotate_each: bool
+) -> list[PIL.Image.Image]:
+    """2-D grid imposition (docs/stage5-ux-plan.md M5.5 postmortem #3) —
+    unlike split_into_tiles' 1-D horizontal bands, this cuts both axes at
+    once. Confirmed against a hand-drawn packing diagram, not guessed: a
+    plain 2x2 grid of an *unrotated* "A4"-equivalent page (210x297mm)
+    already lands almost exactly on real A6 proportions per cell
+    (105x148.5mm vs real A6's 105x148mm) with NO rotation needed at all —
+    unlike a 1x2 *row* split (HALF/"A5"), whose bands are landscape-shaped
+    and do need a 90° rotation each to reach A5's portrait shape. Cells
+    are ordered row-major (top-left, top-right, then next row) — the
+    natural reading order for a grid, each pair separated by the same
+    printBreak() between RenderedPage entries as any other imposition."""
+    cell_width = max(1, -(-image.width // cols))  # ceil division
+    cell_height = max(1, -(-image.height // rows))
+    tiles = []
+    for row in range(rows):
+        for col in range(cols):
+            left = col * cell_width
+            top = row * cell_height
+            right = min(left + cell_width, image.width)
+            bottom = min(top + cell_height, image.height)
+            tile = image.crop((left, top, right, bottom))
+            if rotate_each:
+                tile = tile.transpose(PIL.Image.Transpose.ROTATE_90)
+            tiles.append(tile)
+    return tiles
+
+
 def slice_into_chunks(image: PIL.Image.Image, chunk_height_px: int) -> list[PIL.Image.Image]:
     """Vertical slices of exactly chunk_height_px (last one may be shorter)
     — the unit PrintJobManager sends/retries individually (Stage 4)."""

@@ -5,6 +5,7 @@ from periprint.infra.renderers.base import (
     fit_to_width,
     normalize_to_1bit,
     rotate_page,
+    split_into_grid,
     split_into_tiles,
     trim_to_content_height,
 )
@@ -169,3 +170,40 @@ def test_split_into_tiles_rotate_each_swaps_tile_dimensions() -> None:
     # Each un-rotated band would be 100x50 (non-square, so the swap is
     # actually observable) — rotated, width/height swap to 50x100.
     assert all(tile.size == (50, 100) for tile in tiles)
+
+
+def test_split_into_grid_produces_cols_times_rows_tiles() -> None:
+    source = _image(width=200, height=280)
+
+    tiles = split_into_grid(source, 2, 2, rotate_each=False)
+
+    assert len(tiles) == 4
+    assert all(tile.size == (100, 140) for tile in tiles)
+
+
+def test_split_into_grid_orders_tiles_row_major() -> None:
+    # Mark each quadrant with a distinct color to verify reading order:
+    # top-left, top-right, bottom-left, bottom-right.
+    source = PIL.Image.new("L", (4, 4), color=255)
+    source.putpixel((0, 0), 10)  # top-left
+    source.putpixel((3, 0), 20)  # top-right
+    source.putpixel((0, 3), 30)  # bottom-left
+    source.putpixel((3, 3), 40)  # bottom-right
+
+    tiles = split_into_grid(source, 2, 2, rotate_each=False)
+
+    # Each marker's position *within its own 2x2 cell* differs by quadrant
+    # (e.g. the top-right marker sits at local (1,0), not (0,0)).
+    local_positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
+    assert [
+        tile.getpixel(pos) for tile, pos in zip(tiles, local_positions, strict=True)
+    ] == [10, 20, 30, 40]
+
+
+def test_split_into_grid_rotate_each_swaps_cell_dimensions() -> None:
+    source = _image(width=200, height=280)
+
+    tiles = split_into_grid(source, 2, 2, rotate_each=True)
+
+    # Each un-rotated cell is 100x140 (non-square) — rotated, swaps to 140x100.
+    assert all(tile.size == (140, 100) for tile in tiles)
